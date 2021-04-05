@@ -18,8 +18,10 @@ func availableGuestProtection() (guestProtection, error) {
 	if d, err := os.Stat(tdxSysFirmwareDir); (err == nil && d.IsDir()) || flags[tdxCPUFlag] {
 		return tdxProtection, nil
 	}
-
-	// TODO: Add support for other technologies: SEV
+	// SEV is supported and properly loaded when `/sys/module/kvm_amd/parameters/sev` is set to `1`
+	if _, err := os.Stat(sevKvmParameter); err == nil && !os.IsNotExist(err) {
+		return sevProtection, nil
+	}
 
 	return noneProtection, nil
 }
