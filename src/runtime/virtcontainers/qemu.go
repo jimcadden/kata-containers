@@ -109,9 +109,10 @@ type qemu struct {
 }
 
 const (
-	consoleSocket = "console.sock"
-	qmpSocket     = "qmp.sock"
-	vhostFSSocket = "vhost-fs.sock"
+	consoleSocket        = "console.sock"
+	qmpMonitorSocket     = "qmp.sock"
+	qmpAttestationSocket = "qmp-attestation.sock"
+	vhostFSSocket        = "vhost-fs.sock"
 
 	// memory dump format will be set to elf
 	memoryDumpFormat = "elf"
@@ -124,6 +125,8 @@ const (
 	fallbackFileBackedMemDir = "/dev/shm"
 
 	qemuStopSandboxTimeoutSecs = 15
+
+	launchAttestationTimeoutSecs = 300
 )
 
 // agnostic list of kernel parameters
@@ -330,8 +333,9 @@ func (q *qemu) memoryTopology() (govmmQemu.Memory, error) {
 	return q.arch.memoryTopology(memMb, hostMemMb, uint8(q.config.MemSlots)), nil
 }
 
-func (q *qemu) qmpSocketPath(id string) (string, error) {
-	return utils.BuildSocketPath(q.store.RunVMStoragePath(), id, qmpSocket)
+func (q *qemu) qmpSocketPath(id string, label string) (string, error) {
+	qmpPath1, nil := utils.BuildSocketPath(q.store.RunVMStoragePath(), id, label)
+	return qmpPath1, nil
 }
 
 func (q *qemu) getQemuMachine() (govmmQemu.Machine, error) {
@@ -364,17 +368,23 @@ func (q *qemu) appendImage(ctx context.Context, devices []govmmQemu.Device) ([]g
 	return devices, nil
 }
 
-func (q *qemu) createQmpSocket() ([]govmmQemu.QMPSocket, error) {
-	monitorSockPath, err := q.qmpSocketPath(q.id)
+func (q *qemu) createQmpMonitorChannel() ([]govmmQemu.QMPSocket, error) {
+	monitorQmpSocket, err = q.createQmpSocket(q.id, qmpMonitorSocket)
 	if err != nil {
 		return nil, err
 	}
-
 	q.qmpMonitorCh = qmpChannel{
 		ctx:  q.ctx,
-		path: monitorSockPath,
+		path: monitorQmpSocket.path,
 	}
+	return monitorQmpSocket, err
+}
 
+func (q *qemu) createQmpSocket(label string) ([]govmmQemu.QMPSocket, error) {
+	sockPath, err := q.qmpSocketPath(q.id, label)
+	if err != nil {
+		return nil, err
+	}
 	return []govmmQemu.QMPSocket{
 		{
 			Type:   "unix",
@@ -495,6 +505,7 @@ func (q *qemu) createSandbox(ctx context.Context, id string, networkNS NetworkNa
 		NoGraphic:     true,
 		NoReboot:      true,
 		Daemonize:     true,
+		Stopped:       q.config.LaunchAttestation,
 		MemPrealloc:   q.config.MemPrealloc,
 		HugePages:     q.config.HugePages,
 		Realtime:      q.config.Realtime,
@@ -555,9 +566,18 @@ func (q *qemu) createSandbox(ctx context.Context, id string, networkNS NetworkNa
 		return fmt.Errorf("UUID should not be empty")
 	}
 
-	qmpSockets, err := q.createQmpSocket()
+	qmpSockets, err := q.createQmpMonitorChannel()
 	if err != nil {
 		return err
+	}
+
+	// Create an additional qmp socket for launch attestation
+	if q.config.LaunchAttestation {
+		attestationSock, err := q.createQmpSocket(qmpAttestationSocket)
+		if err != nil {
+			return err
+		}
+		qmpSockets = append(qmpSockets, attestationSock)
 	}
 
 	devices, ioThread, err := q.buildDevices(ctx, initrdPath)
@@ -885,6 +905,12 @@ func (q *qemu) startSandbox(ctx context.Context, timeout int) error {
 		return err
 	}
 
+	if q.config.LaunchAttestation {
+		if err = q.waitForLaunchAttestation(ctx, launchAttestationTimeoutSecs); err != nil {
+			return err
+		}
+	}
+
 	if q.config.BootFromTemplate {
 		if err = q.bootFromTemplate(); err != nil {
 			return err
@@ -896,6 +922,29 @@ func (q *qemu) startSandbox(ctx context.Context, timeout int) error {
 	}
 
 	return err
+}
+
+func (q *qemu) waitForLaunchAttestation(ctx context.Context, timeout int) error {
+
+	if err := q.qmpSetup(); err != nil {
+		return err
+	}
+	timeStart := time.Now()
+	for {
+		status, err := q.qmpMonitorCh.qmp.ExecuteQueryStatus(q.qmpMonitorCh.ctx)
+		if err != nil {
+			return err
+		}
+		if status.Status != "prelaunch" {
+			break
+		}
+		if int(time.Since(timeStart).Seconds()) > timeout {
+			return fmt.Errorf("Failed to complete launch attestation %ds): %v", timeout, err)
+		}
+		time.Sleep(time.Duration(50) * time.Millisecond)
+	}
+
+	return nil
 }
 
 func (q *qemu) bootFromTemplate() error {

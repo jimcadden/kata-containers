@@ -24,6 +24,22 @@ machine_type = "@MACHINETYPE@"
 # Default false
 # confidential_guest = true
 
+# Enable launch attestation of confidential guest.
+# Architectures such as SEV and SEV-ES allow an attestation measurement
+# of the VM to be taken during launch of the VM, which can then be
+# externally verified prior to booting the OS. A successful verification
+# confirms that the software and configuration of the guest VM matches
+# the expectation of the guest owner.
+#
+# Default false
+enable_launch_attestation = true
+
+# Path to the launch attestation session file.
+launch_attestation_session_file = "@DEFLAUNCHATTESTATIONSESSIONFILE@"
+
+# Path to the launch attestation certification file.
+launch_attestation_certification_file = "@DEFLAUNCHATTESTATIONCERTFILE@"
+
 # List of valid annotation names for the hypervisor
 # Each member of the list is a regular expression, which is the base name
 # of the annotation, e.g. "path" for io.katacontainers.config.hypervisor.path"

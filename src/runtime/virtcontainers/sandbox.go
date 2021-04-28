@@ -51,7 +51,7 @@ import (
 const (
 	// vmStartTimeout represents the time in seconds a sandbox can wait before
 	// to consider the VM starting operation failed.
-	vmStartTimeout = 10
+	vmStartTimeout = 1000
 
 	// DirMode is the permission bits used for creating a directory
 	DirMode = os.FileMode(0750) | os.ModeDir
